@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 from tempfile import mkdtemp
 
@@ -12,7 +13,6 @@ from server.storages import LocalStorage, S3Storage
 from server.storages.base import File
 from server.tus import create_api_router
 from setting import settings
-import logging
 
 VERSION = "1.0.1"
 COMPATIBLE_VERSIONS = [VERSION]
