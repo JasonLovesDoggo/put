@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import BinaryIO, List, Optional
 
-from server.storages.base import File, SortOrder, FilterBy
+from server.storages.base import File, SortOrder, OrderBy
 
 
 @dataclass
@@ -96,7 +96,7 @@ class S3Storage:
         prefix: str = "",
         limit: int = 10,
         offset: int = 0,
-        sort_by: FilterBy = "created_at",
+        sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
     ) -> List[File] | None:
         try:
@@ -143,7 +143,7 @@ class S3Storage:
         created_before: Optional[datetime] = None,
         limit: int = 10,
         offset: int = 0,
-        sort_by: FilterBy = "created_at",
+        sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
     ) -> List[File] | None:
         try:

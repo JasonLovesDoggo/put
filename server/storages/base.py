@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import BinaryIO, List, Literal, Optional, Protocol, Any, Dict
 
-FilterBy = Literal["created_at", "size", "name"]
+OrderBy = Literal["created_at", "size", "name"]
 
 
 class SortOrder(Enum):
@@ -57,7 +57,7 @@ class Storage(Protocol):
             location: The location of the storage (e.g., a directory path or a bucket name).
         """
 
-    def upload(self, file: File, data: BinaryIO) -> None:
+    async def upload(self, file: File, data: BinaryIO) -> None:
         """
         Uploads a file to the storage.
 
@@ -66,7 +66,7 @@ class Storage(Protocol):
             data: A binary stream of the file data.
         """
 
-    def download(self, uid: str) -> tuple[File, BinaryIO]:
+    async def download(self, uid: str) -> tuple[File, BinaryIO]:
         """
         Downloads a file from the storage.
 
@@ -77,7 +77,7 @@ class Storage(Protocol):
             A tuple containing the File object and a binary stream of the file data.
         """
 
-    def delete(self, uid: str) -> None:
+    async def delete(self, uid: str) -> None:
         """
         Deletes a file from the storage.
 
@@ -85,7 +85,7 @@ class Storage(Protocol):
             uid: The unique identifier of the file to delete.
         """
 
-    def get(self, uid: str) -> File:
+    async def get(self, uid: str) -> File:
         """
         Retrieves the metadata of a file from the storage.
 
@@ -99,12 +99,12 @@ class Storage(Protocol):
             FileNotFoundError: If the file is not found.
         """
 
-    def list(
+    async def list(
         self,
         prefix: str = "",
         limit: int = 10,
         offset: int = 0,
-        sort_by: FilterBy = "created_at",
+        sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
     ) -> list[File] | None:
         """
@@ -121,7 +121,7 @@ class Storage(Protocol):
             A list of File objects, or None if no files are found.
         """
 
-    def search(
+    async def search(
         self,
         query: str = "",  # Changed from 'search' to 'query' for clarity
         file_type: Optional[str] = None,  # New filter for file type
@@ -130,7 +130,7 @@ class Storage(Protocol):
         created_before: Optional[datetime] = None,  # New filter for creation date
         limit: int = 10,
         offset: int = 0,
-        sort_by: FilterBy = "created_at",
+        sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
     ) -> List[File] | None:
         """
@@ -150,7 +150,3 @@ class Storage(Protocol):
         Returns:
             A list of File objects matching the search criteria, or None if no files are found.
         """
-
-
-def download_files(uploader: Storage):
-    uploader.download("file1")

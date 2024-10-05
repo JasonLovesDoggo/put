@@ -1,14 +1,17 @@
 import os
 import json
+import shutil
 from dataclasses import dataclass
 
 import aiofiles
-import asyncio
 import aiofiles.os as aios
 from datetime import datetime
-from typing import BinaryIO, List, Optional, Tuple
+from typing import BinaryIO, List, Optional, Tuple, Union
 
-from server.storages.base import File, SortOrder, FilterBy
+from starlette.responses import FileResponse
+
+from server.storages.base import File, SortOrder, OrderBy
+from server.storages.utils.meta import _read_metadata
 
 
 @dataclass
@@ -26,6 +29,30 @@ class AsyncLocalStorage:
         self.root_dir = settings.location or os.path.join(os.getcwd(), "local_storage")
         os.makedirs(self.root_dir, exist_ok=True)
 
+    def load_file_from_uid(self, uid: str) -> File:
+        """
+        Loads file metadata from a JSON file and returns a File instance.
+        """
+        content_path = os.path.join(self.root_dir, uid)
+        content_files = os.listdir(content_path)
+        content_name = [
+            file
+            for file in content_files
+            if not file.endswith(".json") and not file.endswith(".preview")
+        ][0]
+        with open(os.path.join(content_path, "meta.json"), "r") as f:
+            data = json.load(f)
+
+        # Construct a File instance using the loaded data
+        return File(
+            uid=uid,
+            name=content_name,
+            size=data["size"],
+            created_at=data["created_at"],
+            expires=data.get("expires"),
+            metadata=data.get("metadata", {}),
+        )
+
     async def upload(self, file: File, data: BinaryIO) -> None:
         file_root = os.path.join(self.root_dir, file.uid)
 
@@ -39,8 +66,8 @@ class AsyncLocalStorage:
             "size": file.size,
             "created_at": file.created_at,
             "expires": file.expires,
+            "name": file.name,
         }
-        print(metadata)
         async with aiofiles.open(
             os.path.join(file_root, "meta.json"), "w"
         ) as f:  # todo: change to meta (no jso)
@@ -66,48 +93,46 @@ class AsyncLocalStorage:
 
     async def delete(self, uid: str) -> None:
         file_path = os.path.join(self.root_dir, uid)
-        metadata_path = f"{file_path}.meta"
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File with UID {uid} not found")
+        shutil.rmtree(file_path, ignore_errors=True)
 
-        try:
-            await asyncio.gather(aios.remove(file_path), aios.remove(metadata_path))
-        except FileNotFoundError:
-            pass  # Ignore if files don't exist
+    async def get(self, uid: str) -> FileResponse:
+        meta = _read_metadata(uid)
 
-    async def get(self, uid: str) -> File:
-        metadata_path = os.path.join(self.root_dir, f"{uid}.meta")
-
-        if not os.path.exists(metadata_path):
+        if meta is None:
             raise FileNotFoundError(f"File with UID {uid} not found")
 
-        async with aiofiles.open(metadata_path, "r") as f:
-            metadata = json.loads(await f.read())
-
-        return File(**metadata, storage=self)
+        return FileResponse(
+            os.path.join(self.root_dir, uid, meta.name),
+            media_type=meta.metadata.get("type", "application/octet-stream"),
+            filename=meta.name,
+            headers={"Content-Length": str(meta.size)},
+        )
 
     async def list(
         self,
-        prefix: str = "",
         limit: int = 10,
         offset: int = 0,
-        sort_by: FilterBy = "created_at",
+        sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
-    ) -> List[File] | list:
-        files = os.listdir(self.root_dir)
+    ) -> Union[List[File], list]:
+        files = []
 
-        # # Apply sorting
-        # if sort_by == "created_at":
-        #     files.sort(
-        #         key=lambda x: x.created_at, reverse=(sort_order == SortOrder.DESC)
-        #     )
-        # elif sort_by == "size":
-        #     files.sort(key=lambda x: x.size, reverse=(sort_order == SortOrder.DESC))
-        # elif sort_by == "name":
-        #     files.sort(key=lambda x: x.uid, reverse=(sort_order == SortOrder.DESC))
+        # Asynchronously read all JSON files in the specified directory
+        for uid in os.listdir(self.root_dir):
+            file_instance = self.load_file_from_uid(uid)
+            files.append(file_instance)
 
-        # Apply offset and limit
-        files = files[offset : offset + limit]
+        # Sorting files based on sort_by and sort_order
+        files.sort(
+            key=lambda x: getattr(x, sort_by), reverse=(sort_order == SortOrder.DESC)
+        )
 
-        return files if files else []
+        # Apply pagination
+        paginated_files = files[offset : offset + limit]
+
+        return paginated_files
 
     async def search(
         self,
@@ -118,7 +143,7 @@ class AsyncLocalStorage:
         created_before: Optional[datetime] = None,
         limit: int = 10,
         offset: int = 0,
-        sort_by: FilterBy = "created_at",
+        sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
     ) -> List[File] | None:
         all_files = await self.list(limit=1000000)  # Fetch all files
