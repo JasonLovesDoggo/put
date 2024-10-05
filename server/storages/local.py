@@ -1,184 +1,130 @@
-import os
 import json
+import os
 import shutil
-from dataclasses import dataclass
-
-import aiofiles
-import aiofiles.os as aios
 from datetime import datetime
-from typing import BinaryIO, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
-from starlette.responses import FileResponse
+from fastapi import HTTPException
+from pydantic import BaseModel
 
-from server.storages.base import File, SortOrder, OrderBy
-from server.storages.utils.meta import _read_metadata
-
-
-@dataclass
-class LocalSettings:
-    location: str
-    # Add other LocalStorage specific settings here
+from setting import settings
 
 
-class AsyncLocalStorage:
-    """
-    Asynchronous local storage implementation of the Storage protocol.
-    """
+class FileMetadata(BaseModel):
+    id: str
+    name: str
+    size: int
+    created_at: int
+    updated_at: int
+    category: str
+    mime_type: str
 
-    def __init__(self, settings: LocalSettings) -> None:
-        self.root_dir = settings.location or os.path.join(os.getcwd(), "local_storage")
-        os.makedirs(self.root_dir, exist_ok=True)
 
-    def load_file_from_uid(self, uid: str) -> File:
-        """
-        Loads file metadata from a JSON file and returns a File instance.
-        """
-        content_path = os.path.join(self.root_dir, uid)
-        content_files = os.listdir(content_path)
-        content_name = [
-            file
-            for file in content_files
-            if not file.endswith(".json") and not file.endswith(".preview")
-        ][0]
-        with open(os.path.join(content_path, "meta.json"), "r") as f:
-            data = json.load(f)
+class LocalStorage:
+    def __init__(self):
+        self.base_path = settings.local_storage.base_path
+        self.metadata_file = os.path.join(self.base_path, "metadata.json")
+        self._ensure_base_path()
+        self._load_metadata()
 
-        # Construct a File instance using the loaded data
-        return File(
-            uid=uid,
-            name=content_name,
-            size=data["size"],
-            created_at=data["created_at"],
-            expires=data.get("expires"),
-            metadata=data.get("metadata", {}),
+    def _ensure_base_path(self):
+        os.makedirs(self.base_path, exist_ok=True)
+
+    def _load_metadata(self):
+        if os.path.exists(self.metadata_file):
+            with open(self.metadata_file, "r") as f:
+                self.metadata = json.load(f)
+        else:
+            self.metadata = {}
+
+    def _save_metadata(self):
+        with open(self.metadata_file, "w") as f:
+            json.dump(self.metadata, f)
+
+    def _get_category_path(self, category: str) -> str:
+        return os.path.join(self.base_path, category)
+
+    async def upload(self, file_path: str, category: str, mime_type: str) -> str:
+        file_id = os.path.basename(file_path)
+        category_path = self._get_category_path(category)
+        os.makedirs(category_path, exist_ok=True)
+
+        destination = os.path.join(category_path, file_id)
+        shutil.copy2(file_path, destination)
+
+        file_stat = os.stat(destination)
+
+        now = int(datetime.now().timestamp())
+        metadata = FileMetadata(
+            id=file_id,
+            name=os.path.basename(file_path),
+            size=file_stat.st_size,
+            created_at=now,
+            updated_at=now,
+            category=category,
+            mime_type=mime_type,
         )
 
-    async def upload(self, file: File, data: BinaryIO) -> None:
-        file_root = os.path.join(self.root_dir, file.uid)
+        self.metadata[file_id] = metadata.model_dump()
+        self._save_metadata()
 
-        await aios.makedirs(file_root, exist_ok=True)
-        async with aiofiles.open(os.path.join(file_root, file.name), "wb") as f:
-            await f.write(data.read())
+        return file_id
 
-        metadata = {
-            "uid": file.uid,
-            "metadata": file.metadata,
-            "size": file.size,
-            "created_at": file.created_at,
-            "expires": file.expires,
-            "name": file.name,
-        }
-        async with aiofiles.open(
-            os.path.join(file_root, "meta.json"), "w"
-        ) as f:  # todo: change to meta (no jso)
-            await f.write(json.dumps(metadata))
+    async def download(self, file_id: str) -> bytes:
+        if file_id not in self.metadata:
+            raise HTTPException(status_code=404, detail="File not found")
 
-    async def download(self, file_name: str) -> Tuple[File, BinaryIO]:
-        file_path = os.path.join(self.root_dir, file_name)
-        metadata_path = f"{file_path}.meta"
-
-        if not os.path.exists(file_path) or not os.path.exists(metadata_path):
-            raise FileNotFoundError(f"File with name {file_name} not found")
-
-        async with aiofiles.open(metadata_path, "r") as f:
-            metadata = json.loads(await f.read())
-
-        file = File(**metadata, storage=self)
-
-        data = await aiofiles.open(file_path, "rb")
-        return (
-            file,
-            data,
+        file_path = os.path.join(
+            self.base_path, self.metadata[file_id]["category"], file_id
         )
-
-    async def delete(self, uid: str) -> None:
-        file_path = os.path.join(self.root_dir, uid)
         if not os.path.exists(file_path):
-            raise FileNotFoundError(f"File with UID {uid} not found")
-        shutil.rmtree(file_path, ignore_errors=True)
+            raise HTTPException(status_code=404, detail="File not found")
 
-    async def get(self, uid: str) -> FileResponse:
-        meta = _read_metadata(uid)
+        with open(file_path, "rb") as f:
+            return f.read()
 
-        if meta is None:
-            raise FileNotFoundError(f"File with UID {uid} not found")
+    async def delete(self, file_id: str) -> None:
+        if file_id not in self.metadata:
+            raise HTTPException(status_code=404, detail="File not found")
 
-        return FileResponse(
-            os.path.join(self.root_dir, uid, meta.name),
-            media_type=meta.metadata.get("type", "application/octet-stream"),
-            filename=meta.name,
-            headers={"Content-Length": str(meta.size)},
+        file_path = os.path.join(
+            self.base_path, self.metadata[file_id]["category"], file_id
         )
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-    async def list(
+        del self.metadata[file_id]
+        self._save_metadata()
+
+    async def list_files(
         self,
-        limit: int = 10,
-        offset: int = 0,
-        sort_by: OrderBy = "created_at",
-        sort_order: SortOrder = SortOrder.DESC,
-    ) -> Union[List[File], list]:
-        files = []
+        category: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        start_date: Optional[int] = None,  # Unix timestamp
+        end_date: Optional[int] = None,  # Unix timestamp
+        min_size: Optional[int] = None,
+        max_size: Optional[int] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+    ) -> List[Dict[str, Any]]:
+        files = list(self.metadata.values())
 
-        # Asynchronously read all JSON files in the specified directory
-        for uid in os.listdir(self.root_dir):
-            file_instance = self.load_file_from_uid(uid)
-            files.append(file_instance)
+        # Apply filters
+        if category:
+            files = [f for f in files if f["category"] == category]
+        if mime_type:
+            files = [f for f in files if f["mime_type"] == mime_type]
+        if start_date:
+            files = [f for f in files if f["created_at"] >= start_date]
+        if end_date:
+            files = [f for f in files if f["created_at"] <= end_date]
+        if min_size is not None:
+            files = [f for f in files if f["size"] >= min_size]
+        if max_size is not None:
+            files = [f for f in files if f["size"] <= max_size]
 
-        # Sorting files based on sort_by and sort_order
-        files.sort(
-            key=lambda x: getattr(x, sort_by), reverse=(sort_order == SortOrder.DESC)
-        )
+        # Sort files
+        reverse = sort_order.lower() == "desc"
+        files.sort(key=lambda x: x[sort_by], reverse=reverse)
 
-        # Apply pagination
-        paginated_files = files[offset : offset + limit]
-
-        return paginated_files
-
-    async def search(
-        self,
-        query: str = "",
-        file_type: Optional[str] = None,
-        owner: Optional[str] = None,
-        created_after: Optional[datetime] = None,
-        created_before: Optional[datetime] = None,
-        limit: int = 10,
-        offset: int = 0,
-        sort_by: OrderBy = "created_at",
-        sort_order: SortOrder = SortOrder.DESC,
-    ) -> List[File] | None:
-        all_files = await self.list(limit=1000000)  # Fetch all files
-        if not all_files:
-            return None
-
-        filtered_files = []
-        for file in all_files:
-            if query and query.lower() not in file.uid.lower():
-                continue
-            if file_type and not file.uid.lower().endswith(file_type.lower()):
-                continue
-            if owner and file.metadata.get("owner") != owner:
-                continue
-            if created_after and file.created_at < created_after.timestamp():
-                continue
-            if created_before and file.created_at > created_before.timestamp():
-                continue
-            filtered_files.append(file)
-
-        # Apply sorting
-        if sort_by == "created_at":
-            filtered_files.sort(
-                key=lambda x: x.created_at, reverse=(sort_order == SortOrder.DESC)
-            )
-        elif sort_by == "size":
-            filtered_files.sort(
-                key=lambda x: x.size, reverse=(sort_order == SortOrder.DESC)
-            )
-        elif sort_by == "name":
-            filtered_files.sort(
-                key=lambda x: x.uid, reverse=(sort_order == SortOrder.DESC)
-            )
-
-        # Apply offset and limit
-        filtered_files = filtered_files[offset : offset + limit]
-
-        return filtered_files if filtered_files else None
+        return files

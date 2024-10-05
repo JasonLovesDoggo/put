@@ -1,12 +1,25 @@
-[storage]
-type = "local"  # or "s3"
+app_name = "My Self-Hosted Drive"
+debug = true
+storage_type = "local"
 
-[storage.local]
-location = "/home/json/PycharmProjects/put/static"
+[local_storage]
+base_path = "/home/json/PycharmProjects/put/static"
 
-[storage.s3]
-bucket_name = "your-bucket-name"
-endpoint_url = "https://your-s3-endpoint.com"  # Optional
-region_name = "your-region"  # Optional
-aws_access_key_id = "YOUR_ACCESS_KEY"  # Optional
-aws_secret_access_key = "YOUR_SECRET_KEY"  # Optional
+[s3_storage]
+bucket_name = "my-s3-bucket"
+region_name = "us-west-2"
+access_key_id = "YOUR_ACCESS_KEY"
+secret_access_key = "YOUR_SECRET_KEY"
+
+[tus]
+max_size = 2147483648  # 2GB
+expiration_period = 86400  # 24 hours
+
+[api]
+prefix = "/api"
+cors_origins = ["http://localhost:3000", "https://example.com"]
+cors_headers = ["*"]
+
+[logging]
+level = "INFO"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

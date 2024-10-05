@@ -1,10 +1,11 @@
-import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
 
+import pytest
+from fastapi.testclient import TestClient
+
 from main import app
-from server.storages.base import AbstractStorage
 from server.metadata import FileMetadata
+from server.storages.base import AbstractStorage
 
 
 @pytest.fixture

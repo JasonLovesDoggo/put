@@ -1,33 +1,50 @@
 import asyncio
 from datetime import datetime
+from tempfile import mkdtemp
 
+from aiofiles import os as aios
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles
 
 from server.metadata import FileMetadata
+from server.routes import router as api_router
+from server.storages import LocalStorage, S3Storage
 from server.storages.base import File
 from server.tus import create_api_router
-from setting import create_storage, load_settings
-from server.routes import router as api_router
+from setting import settings
+import logging
 
 VERSION = "1.0.1"
 COMPATIBLE_VERSIONS = [VERSION]
-app = FastAPI()
+
+if settings.storage_type == "local":
+    storage = LocalStorage()
+else:
+    storage = S3Storage(
+        bucket_name=settings.s3_storage.bucket_name,
+        endpoint_url=settings.s3_storage.endpoint_url,
+        region_name=settings.s3_storage.region_name,
+        access_key_id=settings.s3_storage.access_key_id,
+        secret_access_key=settings.s3_storage.secret_access_key,
+    )
+
+app = FastAPI(title=settings.app_name, debug=settings.debug)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.api.cors_origins,
+    allow_headers=settings.api.cors_headers,
 )
 
-settings = load_settings("config.toml")
-storage = create_storage(settings)
+# Configure logging
 
+logging.basicConfig(level=settings.logging.level, format=settings.logging.format)
 
-FILES_DIR = "content"
-
-app.mount("/file", StaticFiles(directory=FILES_DIR), name="static")
+# Use settings in your TUS implementation
+tus_config = {
+    "max_size": settings.tus.max_size,
+    "expiration_period": settings.tus.expiration_period,
+}
 
 
 def on_upload_complete(file_path: str, metadata: FileMetadata) -> None:
@@ -44,23 +61,36 @@ def on_upload_complete(file_path: str, metadata: FileMetadata) -> None:
         created_at=from_timestamp(metadata.created_at, "%Y-%m-%d %H:%M:%S.%f"),
         expires=from_timestamp(metadata.expires, "%Y-%m-%dT%H:%M:%S.%f"),
         size=metadata.size,
-        storage=storage,
         uid=metadata.uid,
     )
 
-    asyncio.run(storage.upload(file, open(file_path, "rb")))
+    asyncio.run(
+        post_upload(
+            file,
+            file_path,
+        )
+    )
+
+
+async def post_upload(file, filepath):
+    print(f"Uploading file: {filepath}")
+    await storage.upload(
+        file_path=filepath, category="unsorted", mime_type="application/octet-stream"
+    )
+
+    await aios.remove(filepath)
+    await aios.remove(filepath + ".info")
 
 
 KB = 1024
 MB = KB * 1024
 GB = MB * 1024
-TB = GB * 1024
 
 app.include_router(
     create_api_router(
-        files_dir=FILES_DIR,  # OPTIONAL
-        max_size=120 * GB,  # OPTIONAL
-        on_upload_complete=on_upload_complete,  # OPTIONAL
+        files_dir=mkdtemp(),
+        max_size=settings.tus.max_size * GB,
+        on_upload_complete=on_upload_complete,
     ),
 )
 

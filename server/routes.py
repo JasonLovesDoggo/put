@@ -1,42 +1,62 @@
-from typing import Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
-from starlette import status
+from fastapi import APIRouter, Depends, Query
 
-from server.storages.base import SortOrder, OrderBy
-from setting import load_settings, create_storage
+from server.storages.local import LocalStorage
 
-storage = create_storage(load_settings())
-router = APIRouter(prefix="/api")
+router = APIRouter()
 
 
-@router.get("/list")
+def get_storage() -> LocalStorage:
+    return LocalStorage()
+
+
+@router.get("/files")
 async def list_files(
-    limit: int = 10,
-    offset: int = 0,
-    sort_by: OrderBy = "created_at",
-    sort_order: SortOrder = SortOrder.DESC,
-) -> Any:
-    return await storage.list(
-        limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order
+    storage: LocalStorage = Depends(get_storage),
+    category: Optional[str] = None,
+    mime_type: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    min_size: Optional[int] = None,
+    max_size: Optional[int] = None,
+    sort_by: str = Query("name", enum=["name", "size", "created_at", "updated_at"]),
+    sort_order: str = Query("asc", enum=["asc", "desc"]),
+) -> List[Dict[str, Any]]:
+    return await storage.list_files(
+        category=category,
+        mime_type=mime_type,
+        start_date=start_date,
+        end_date=end_date,
+        min_size=min_size,
+        max_size=max_size,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 
-@router.delete(
-    "/{uid}", status_code=status.HTTP_204_NO_CONTENT | status.HTTP_404_NOT_FOUND
-)
-async def delete_file(uid: str) -> None:
-    try:
-        await storage.delete(uid)
-    except FileNotFoundError:
-        return status.HTTP_404_NOT_FOUND
+@router.post("/files")
+async def upload_file(
+    file_path: str,
+    category: str,
+    mime_type: str,
+    storage: LocalStorage = Depends(get_storage),
+) -> Dict[str, str]:
+    file_id = await storage.upload(file_path, category, mime_type)
+    return {"file_id": file_id}
 
 
-# @router.get("/{uid}")
-# async def get_file(uid: str) -> Any:
-#     return await storage.get(uid)
+@router.get("/files/{file_id}")
+async def download_file(
+    file_id: str, storage: LocalStorage = Depends(get_storage)
+) -> bytes:
+    return await storage.download(file_id)
 
 
-@router.get("/{uid}", status_code=status.HTTP_404_NOT_FOUND | status.HTTP_200_OK)
-async def get_file(uid: str) -> Any:
-    return await storage.get(uid)
+@router.delete("/files/{file_id}")
+async def delete_file(
+    file_id: str, storage: LocalStorage = Depends(get_storage)
+) -> Dict[str, str]:
+    await storage.delete(file_id)
+    return {"status": "success"}
