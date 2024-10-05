@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "name": "put",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ],
+  "presets": {
+    "requestType": "http",
+    "requestUrl": "127.0.0.1:8000/"
+  }
+}

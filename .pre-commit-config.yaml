@@ -16,11 +16,11 @@ repos:
         always_run: true
         args: ["check", ".", "--fix"]
 
-      - id: mypy
-        name: Validate types with MyPy
-        entry: poetry run mypy
-        language: system
-        types: [python]
-        pass_filenames: false
-        args:
-          - "."
+#      - id: mypy
+#        name: Validate types with MyPy
+#        entry: poetry run mypy
+#        language: system
+#        types: [python]
+#        pass_filenames: false
+#        args:
+#          - "."

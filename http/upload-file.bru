@@ -1,0 +1,15 @@
+meta {
+  name: upload-file
+  type: http
+  seq: 2
+}
+
+post {
+  url: /
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  : @file(bella.jpg)
+}

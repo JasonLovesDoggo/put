@@ -1,0 +1,12 @@
+[storage]
+type = "local"  # or "s3"
+
+[storage.local]
+location = "/home/json/PycharmProjects/put/static"
+
+[storage.s3]
+bucket_name = "your-bucket-name"
+endpoint_url = "https://your-s3-endpoint.com"  # Optional
+region_name = "your-region"  # Optional
+aws_access_key_id = "YOUR_ACCESS_KEY"  # Optional
+aws_secret_access_key = "YOUR_SECRET_KEY"  # Optional
