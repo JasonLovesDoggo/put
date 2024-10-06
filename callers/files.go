@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"text/tabwriter"
 )
 
-// ListFiles lists files from the server
+// ListFiles lists files from the server in a formatted table
 func ListFiles(c *cli.Context) error {
 	config, err := utils.LoadConfig()
 	if err != nil {
@@ -37,15 +39,30 @@ func ListFiles(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	var files []utils.FileInfo
-	err = json.Unmarshal(bodyBytes, &files)
+	var filesResponse utils.ListFilesResponse
+	err = json.Unmarshal(bodyBytes, &filesResponse)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Files:")
-	for _, file := range files {
-		fmt.Printf("- ID: %s, Name: %s, Size: %d bytes\n", file.ID, file.Name, file.Size)
+
+	// Use tabwriter to format the output
+	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	// Print the header
+	fmt.Fprintln(writer, "KEY\tSIZE\tLAST MODIFIED\tSTORAGE CLASS\tOWNER")
+	fmt.Fprintln(writer, "----\t----\t-------------\t-------------\t-----")
+
+	// Print each file's details
+	for _, file := range filesResponse.Contents {
+		fmt.Fprintf(writer, "%s\t%d\t%s\t%s\t%s\n",
+			file.Key, file.Size, file.LastModified, file.StorageClass, file.Owner.DisplayName)
 	}
+
+	// Flush the writer to output the table
+	err = writer.Flush()
+	if err != nil {
+		return fmt.Errorf("failed to flush writer: %v", err)
+	}
+
 	return nil
 }
 
@@ -148,7 +165,7 @@ func UploadFile(c *cli.Context) error {
 	}
 
 	// Prepare the HTTP request
-	url := config.InstanceURI + "/api/file"
+	url := config.InstanceURI + "/api/file?share=" + strconv.FormatBool(c.Bool("share"))
 	req, err := http.NewRequest("POST", url, &requestBody)
 	if err != nil {
 		return fmt.Errorf("failed to create HTTP request: %v", err)
@@ -174,6 +191,103 @@ func UploadFile(c *cli.Context) error {
 		return fmt.Errorf("received non-OK HTTP status: %s", resp.Status)
 	}
 
-	fmt.Println("File uploaded successfully.")
+	if c.Bool("share") {
+		// Print out resp body
+		fmt.Print("Your file is now publicly shareable for Here's the share link: ")
+		fmt.Println(resp.Body)
+	}
+	return nil
+}
+
+// RenameFile renames a file on the server
+func RenameFile(c *cli.Context) error {
+	config, err := utils.LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	oldName := c.Args().Get(0)
+	newName := c.Args().Get(1)
+	if oldName == "" || newName == "" {
+		return fmt.Errorf("please provide the old file name and the new file name")
+	}
+
+	jsonData := map[string]string{"oldName": oldName, "newName": newName}
+	jsonBytes, err := json.Marshal(jsonData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON data: %v", err)
+	}
+
+	url := config.InstanceURI + "/api/file/?oldName=" + oldName + "&newName=" + newName
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to rename file: %v", err)
+	}
+	defer func(Body io.ReadCloser) {
+		if err := Body.Close(); err != nil {
+			fmt.Println("Error closing response body:", err)
+		}
+	}(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("received non-OK HTTP status: %s", resp.Status)
+	}
+
+	return nil
+}
+
+func DownloadFile(c *cli.Context) error {
+	config, err := utils.LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	fileName := c.Args().Get(0)
+	downloadPath := c.Args().Get(1)
+	if fileName == "" {
+		return fmt.Errorf("please provide a file Name to download")
+	}
+	if downloadPath == "" {
+		downloadPath = fileName
+	}
+
+	url := config.InstanceURI + "/api/file/download?name=" + fileName
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to fetch file: %v", err)
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	}(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("received non-OK HTTP status: %s", resp.Status)
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	file, err := os.Create(downloadPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %v", err)
+	}
+	defer func(file *os.File) {
+		if err := file.Close(); err != nil {
+			fmt.Println("Error closing file:", err)
+		}
+	}(file)
+	_, err = file.Write(bodyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %v", err)
+	}
+
 	return nil
 }

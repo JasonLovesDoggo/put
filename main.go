@@ -41,23 +41,49 @@ from your instance.`,
 			{
 				Name:    "ls",
 				Aliases: []string{"l"},
-				Usage:   "List files on the server",
-				Before:  utils.EnsureInstanceURI,
-				Action:  callers.ListFiles,
+				Usage: "List files on the server" +
+					"put ls",
+				Before: utils.EnsureInstanceURI,
+				Action: callers.ListFiles,
 			},
 			{
 				Name:    "remove",
 				Aliases: []string{"rm"},
-				Usage:   "Remove a file from the server",
-				Before:  utils.EnsureInstanceURI,
-				Action:  callers.RemoveFile,
+				Usage: "Remove a file from the server" +
+					"put remove <fileName>",
+				Before: utils.EnsureInstanceURI,
+				Action: callers.RemoveFile,
 			},
 			{
 				Name:    "stash",
 				Aliases: []string{"s"},
-				Usage:   "Upload a file to the server",
-				Before:  utils.EnsureInstanceURI,
-				Action:  callers.UploadFile,
+				Usage: "Upload a file to the server" +
+					"put stash <filePath>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name: "share",
+						Usage: "Share the file with the public " +
+							"(default: false)",
+						Value: false,
+					},
+				},
+				Before: utils.EnsureInstanceURI,
+				Action: callers.UploadFile,
+			},
+			{
+				Name:    "rename",
+				Aliases: []string{"r"},
+				Usage: "Rename a file on the server" +
+					"put rename <oldName> <newName>",
+				Before: utils.EnsureInstanceURI,
+				Action: callers.RenameFile,
+			}, {
+				Name:    "download",
+				Aliases: []string{"d", "down", "get"},
+				Usage: "Download a file from the server" +
+					"put down <fileName> <downloadPath (optional)>",
+				Before: utils.EnsureInstanceURI,
+				Action: callers.DownloadFile,
 			},
 
 			{

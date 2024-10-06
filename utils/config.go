@@ -14,11 +14,26 @@ type Config struct {
 	InstanceURI string `json:"instance_uri"`
 }
 
-// FileInfo represents a file on the server
-type FileInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+// FileOwner represents the owner of a file
+type FileOwner struct {
+	DisplayName string `json:"DisplayName"`
+	ID          string `json:"ID"`
+}
+
+// FileContent represents the content of a file in the list
+type FileContent struct {
+	Key               string    `json:"Key"`
+	LastModified      string    `json:"LastModified"`
+	ETag              string    `json:"ETag"`
+	ChecksumAlgorithm []string  `json:"ChecksumAlgorithm"`
+	Size              int64     `json:"Size"`
+	StorageClass      string    `json:"StorageClass"`
+	Owner             FileOwner `json:"Owner"`
+}
+
+// ListFilesResponse represents the response structure of the list files API
+type ListFilesResponse struct {
+	Contents []FileContent `json:"contents"`
 }
 
 // GetConfigFilePath returns the path to the config file
