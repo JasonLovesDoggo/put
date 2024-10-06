@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// verifyInstanceURI checks if the provided instance URI is valid
+// VerifyInstanceURI checks if the provided instance URI is valid
 func VerifyInstanceURI(c *cli.Context, instanceURI string) error {
 	if !(strings.HasPrefix(instanceURI, "https://") ||
 		(strings.HasPrefix(instanceURI, "http://") && !c.Bool("unsecure"))) {
@@ -36,7 +36,9 @@ func VerifyInstanceURI(c *cli.Context, instanceURI string) error {
 		}
 	}(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("received non-OK HTTP status: %s", resp.Status)
+		fmt.Print("Url provided is not a valid PUT instance URI. If you wish to use a self-hosted instance, " +
+			"please visit https://github.com/Jeff15321/put-server for more information.")
+		return nil
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
