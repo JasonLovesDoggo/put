@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -8,6 +6,9 @@ from pydantic import BaseModel, Field, validator
 
 
 class TusConfig(BaseModel):
+    files_dir: Path = Field(
+        "/tmp/files", description="Directory for TUS temporary files"
+    )
     max_size: int = Field(1024 * 1024 * 1024, description="Maximum file size in bytes")
     expiration_period: int = Field(
         86400, description="Expiration period for incomplete uploads in seconds"
@@ -49,11 +50,19 @@ class Settings(BaseModel):
     storage_type: Literal["local", "s3"] = Field(
         "local", description="Storage type (local or s3)"
     )
-    local_storage: LocalStorageConfig
+    local_storage: Optional[LocalStorageConfig] = None
     s3_storage: Optional[S3StorageConfig] = None
     tus: TusConfig = Field(default_factory=TusConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+
+    @validator("local_storage", always=True)
+    def validate_local_storage(cls, v, values):
+        if values["storage_type"] == "local" and v is None:
+            raise ValueError(
+                "Local storage configuration is required when storage_type is set to 'local'"
+            )
+        return v
 
     @validator("s3_storage", always=True)
     def validate_s3_storage(cls, v, values):
@@ -73,19 +82,6 @@ def load_settings(config_path: str | Path = "config.toml") -> Settings:
         config_data = tomllib.load(f)
 
     return Settings(**config_data)
-
-
-# Usage example:
-if __name__ == "__main__":
-    settings = load_settings()
-    print(f"App Name: {settings.app_name}")
-    print(f"Storage Type: {settings.storage_type}")
-    if settings.storage_type == "local":
-        print(f"Local Storage Path: {settings.local_storage.base_path}")
-    else:
-        print(f"S3 Bucket: {settings.s3_storage.bucket_name}")
-    print(f"API Prefix: {settings.api.prefix}")
-    print(f"TUS Max Size: {settings.tus.max_size}")
 
 
 settings = load_settings("config.toml")

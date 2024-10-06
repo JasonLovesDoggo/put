@@ -1,11 +1,12 @@
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, BinaryIO, Dict, List, Literal, Optional
+from typing import Any, BinaryIO, Dict, List, Optional, Literal
 
 
-class SortOrder(Enum):
+# SortOrder Enum
+class SortOrder(str):
     ASC = "asc"
     DESC = "desc"
 
@@ -19,8 +20,17 @@ class File:
     name: str
     size: int
     created_at: int
+    path: str
+    mime_type: str = "application/octet-stream"
     expires: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    category: Optional[str] = None
+
+    @classmethod
+    def resolve_absolute_path(cls, path: str, base_path: str) -> str:
+        if path.startswith(base_path):
+            return path
+        return os.path.abspath(os.path.join(base_path, path))
 
     def is_expired(self) -> bool:
         return self.expires is not None and self.expires < datetime.now().timestamp()
@@ -44,10 +54,11 @@ class AbstractStorage(ABC):
         pass
 
     @abstractmethod
-    async def list(
+    async def list_files(
         self,
+        category: Optional[str] = None,
         prefix: str = "",
-        limit: int = 10,
+        limit: int = 100,
         offset: int = 0,
         sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,
@@ -55,14 +66,14 @@ class AbstractStorage(ABC):
         pass
 
     @abstractmethod
-    async def search(
+    async def search_files(
         self,
         query: str = "",
-        file_type: Optional[str] = None,
-        owner: Optional[str] = None,
+        category: Optional[str] = None,
+        mime_type: Optional[str] = None,
         created_after: Optional[datetime] = None,
         created_before: Optional[datetime] = None,
-        limit: int = 10,
+        limit: int = 100,
         offset: int = 0,
         sort_by: OrderBy = "created_at",
         sort_order: SortOrder = SortOrder.DESC,

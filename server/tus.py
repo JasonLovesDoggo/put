@@ -10,16 +10,13 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
-    Path,
     Request,
     Response,
     status,
 )
-from starlette.responses import FileResponse
+from starlette.responses import StreamingResponse
 
-from server.metadata import FileMetadata
-
-# mypy: ignore-errors
+from .metadata import FileMetadata
 
 
 def default_auth():
@@ -29,10 +26,11 @@ def default_auth():
 def create_api_router(
     files_dir="/tmp/files",
     max_size=128849018880,
-    on_upload_complete: Optional[Callable[[str, dict], None]] = None,
+    on_upload_complete: Optional[Callable[[str, FileMetadata], None]] = None,
     auth: Optional[Callable[[], None]] = default_auth,
     days_to_keep: int = 5,
     prefix: str = "files",
+    storage=None,
 ):
     router = APIRouter(prefix=f"/{prefix}")
 
@@ -41,30 +39,46 @@ def create_api_router(
         "creation,creation-defer-length,creation-with-upload,expiration,termination"
     )
 
-    async def _get_request_chunk(
-        request: Request, uuid: str = Path(...), post_request: bool = False
-    ) -> bool | None:
+    def _ensure_dir(path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+    async def _write_chunk(request: Request, uuid: str) -> None:
         meta = _read_metadata(uuid)
         if not meta or not _file_exists(uuid):
-            return False
+            raise HTTPException(status_code=404, detail="Upload not found")
 
-        with open(f"{files_dir}/{uuid}", "ab") as f:
+        file_path = os.path.join(files_dir, uuid)
+        expected_offset = meta.offset
+
+        upload_offset = int(request.headers.get("Upload-Offset", 0))
+        if upload_offset != expected_offset:
+            raise HTTPException(status_code=409, detail="Upload offset mismatch")
+
+        max_chunk_size = max_size - meta.offset
+        if max_chunk_size <= 0:
+            raise HTTPException(
+                status_code=413, detail="Upload exceeds maximum allowed size"
+            )
+
+        with open(file_path, "ab") as f:
+            bytes_received = 0
             async for chunk in request.stream():
-                if post_request and chunk is None or len(chunk) == 0:
-                    return None
-
-                if _get_file_length(uuid) + len(chunk) > max_size:
-                    raise HTTPException(status_code=413)
-
+                chunk_size = len(chunk)
+                if bytes_received + chunk_size > max_chunk_size:
+                    chunk = chunk[: max_chunk_size - bytes_received]
+                    f.write(chunk)
+                    bytes_received += len(chunk)
+                    meta.offset += len(chunk)
+                    _write_metadata(meta)
+                    raise HTTPException(
+                        status_code=413, detail="Upload exceeds maximum allowed size"
+                    )
                 f.write(chunk)
-                meta.offset += len(chunk)
-                meta.upload_chunk_size = len(chunk)
-                meta.upload_part += 1
-                _write_metadata(meta)
+                bytes_received += chunk_size
+                meta.offset += chunk_size
 
-            f.close()
-
-        return True
+        _write_metadata(meta)
 
     @router.head("/{uuid}", status_code=status.HTTP_200_OK)
     def get_upload_metadata(response: Response, uuid: str, _=Depends(auth)) -> Response:
@@ -73,36 +87,47 @@ def create_api_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
         response.headers["Tus-Resumable"] = tus_version
-        response.headers["Content-Length"] = str(meta.size)
-        response.headers["Upload-Length"] = str(meta.size)
+        response.headers["Upload-Length"] = (
+            str(meta.size) if meta.size is not None else ""
+        )
         response.headers["Upload-Offset"] = str(meta.offset)
         response.headers["Cache-Control"] = "no-store"
-        response.headers["Upload-Metadata"] = (
-            f"filename {base64.b64encode(bytes(meta.metadata['name'], 'utf-8'))!r}, "
-            f"filetype {base64.b64encode(bytes(meta.metadata['type'], 'utf-8'))!r}"
-        )
+        if meta.metadata:
+            upload_metadata = []
+            for k, v in meta.metadata.items():
+                encoded_value = base64.b64encode(v.encode("utf-8")).decode("utf-8")
+                upload_metadata.append(f"{k} {encoded_value}")
+            response.headers["Upload-Metadata"] = ",".join(upload_metadata)
         response.status_code = status.HTTP_200_OK
         return response
 
     @router.patch("/{uuid}", status_code=status.HTTP_204_NO_CONTENT)
-    def upload_chunk(
+    async def upload_chunk(
+        request: Request,
         response: Response,
         uuid: str,
         content_type: str = Header(None),
-        content_length: int = Header(None),
-        upload_offset: int = Header(None),
-        _=Depends(_get_request_chunk),
-        __=Depends(auth),
+        upload_offset: int = Header(...),
+        _=Depends(auth),
     ) -> Response:
-        response_headers = _get_and_save_the_file(
-            response,
-            uuid,
-            content_type,
-            content_length,
-            upload_offset,
-        )
+        if content_type != "application/offset+octet-stream":
+            raise HTTPException(status_code=415, detail="Invalid Content-Type")
 
-        return response_headers
+        await _write_chunk(request, uuid)
+
+        meta = _read_metadata(uuid)
+
+        response.headers["Tus-Resumable"] = tus_version
+        response.headers["Upload-Offset"] = str(meta.offset)
+        if meta.expires:
+            response.headers["Upload-Expires"] = meta.expires
+        response.status_code = status.HTTP_204_NO_CONTENT
+
+        if not meta.defer_length and meta.size is not None and meta.offset == meta.size:
+            if on_upload_complete:
+                await on_upload_complete(os.path.join(files_dir, uuid), meta)
+
+        return response
 
     @router.options("/", status_code=status.HTTP_204_NO_CONTENT)
     def options_create_upload(response: Response, __=Depends(auth)) -> Response:
@@ -110,7 +135,6 @@ def create_api_router(
         response.headers["Tus-Resumable"] = tus_version
         response.headers["Tus-Version"] = tus_version
         response.headers["Tus-Max-Size"] = str(max_size)
-        response.headers["Content-Length"] = str(0)
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
 
@@ -123,49 +147,48 @@ def create_api_router(
         upload_defer_length: int = Header(None),
         _=Depends(auth),
     ) -> Response:
-        if upload_defer_length is not None and upload_defer_length != 1:
-            raise HTTPException(status_code=400, detail="Invalid Upload-Defer-Length")
+        defer_length = upload_defer_length == "1"
 
-        defer_length = upload_defer_length is not None
+        if upload_length is None and not defer_length:
+            raise HTTPException(status_code=400, detail="Missing Upload-Length header")
 
-        # Create a new upload and store the file and metadata in the mapping
+        if upload_length is not None and int(upload_length) > max_size:
+            raise HTTPException(
+                status_code=413, detail="Upload exceeds maximum allowed size"
+            )
+
         metadata = {}
-        if upload_metadata is not None and upload_metadata != "":
-            # Decode the base64-encoded string
-            for kv in upload_metadata.split(","):
-                key, value = kv.rsplit(" ", 1)
-                decoded_value = base64.b64decode(value.strip()).decode("utf-8")
-                metadata[key.strip()] = decoded_value
+        if upload_metadata:
+            for kv_pair in upload_metadata.split(","):
+                kv_pair = kv_pair.strip()
+                if " " in kv_pair:
+                    key, value = kv_pair.split(" ", 1)
+                    value = base64.b64decode(value).decode("utf-8")
+                else:
+                    key = kv_pair
+                    value = ""
+                metadata[key] = value
 
         uuid = str(uuid4().hex)
+        file_path = os.path.join(files_dir, uuid)
+        _ensure_dir(files_dir)
+        with open(file_path, "wb"):
+            pass  # Create an empty file
 
-        date_expiry = datetime.now() + timedelta(days=days_to_keep)
-        saved_meta_data = FileMetadata.from_request(
-            uuid,
-            metadata,
-            upload_length,
-            str(datetime.now()),
-            defer_length,
-            str(date_expiry.isoformat()),
+        date_expiry = datetime.utcnow() + timedelta(days=days_to_keep)
+        meta = FileMetadata(
+            uid=uuid,
+            size=int(upload_length) if upload_length is not None else None,
+            offset=0,
+            metadata=metadata,
+            created_at=datetime.utcnow().isoformat(),
+            defer_length=defer_length,
+            expires=date_expiry.isoformat(),
         )
-        _write_metadata(saved_meta_data)
-
-        _initialize_file(uuid)
-
-        chunk: bool | None = await _get_request_chunk(request, uuid, True)
-        if chunk:
-            response = _get_and_save_the_file(
-                response,
-                uuid,
-            )
-            response.headers["Location"] = _build_location_url(
-                request=request, uuid=uuid
-            )
-            return response
+        _write_metadata(meta)
 
         response.headers["Location"] = _build_location_url(request=request, uuid=uuid)
         response.headers["Tus-Resumable"] = tus_version
-        response.headers["Content-Length"] = str(0)
         response.status_code = status.HTTP_201_CREATED
         return response
 
@@ -180,163 +203,68 @@ def create_api_router(
         response.headers["Tus-Extension"] = tus_extension
         response.headers["Tus-Resumable"] = tus_version
         response.headers["Tus-Version"] = tus_version
-        response.headers["Content-Length"] = str(0)
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
 
     @router.get("/{uuid}")
-    def get_upload(uuid: str) -> FileResponse:
+    async def get_upload(uuid: str) -> StreamingResponse:
+        file_path = os.path.join(files_dir, uuid)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+
         meta = _read_metadata(uuid)
+        if not meta:
+            raise HTTPException(status_code=404, detail="Metadata not found")
 
-        # Check if the upload ID is valid
-        if not meta or uuid != meta.uid or not _file_exists(uuid):
-            raise HTTPException(status_code=404, detail="Upload not found")
+        file_size = os.path.getsize(file_path)
+        file = open(file_path, "rb")
 
-        # Return the file in the response
-        return FileResponse(
-            os.path.join(files_dir, uuid),
-            media_type=meta.metadata.get("type", "application/octet-stream"),
-            filename=meta.metadata["filename"],
-            headers={"Content-Length": str(meta.offset), "Tus-Resumable": tus_version},
+        response = StreamingResponse(
+            file,
+            media_type=meta.metadata.get("mime_type", "application/octet-stream"),
         )
+        filename = meta.metadata.get("filename", uuid)
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response.headers["Content-Length"] = str(file_size)
+        response.headers["Tus-Resumable"] = tus_version
+        return response
 
     @router.delete("/{uuid}", status_code=status.HTTP_204_NO_CONTENT)
-    def delete_upload(uuid: str, response: Response, _=Depends(auth)) -> Response:
-        meta = _read_metadata(uuid)
-
-        # Check if the upload ID is valid
-        if not meta or uuid != meta.uid or not _file_exists(uuid):
+    async def delete_upload(uuid: str, response: Response, _=Depends(auth)) -> Response:
+        file_path = os.path.join(files_dir, uuid)
+        meta_path = os.path.join(files_dir, f"{uuid}.info")
+        if not os.path.exists(file_path) and not os.path.exists(meta_path):
             raise HTTPException(status_code=404, detail="Upload not found")
 
-        # Delete the file and metadata for the upload from the mapping
-        _delete_files(uuid)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
 
-        # Return a 204 No Content response
         response.headers["Tus-Resumable"] = tus_version
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
 
     def _write_metadata(meta: FileMetadata) -> None:
-        if not os.path.exists(files_dir):
-            os.makedirs(files_dir)
-
+        _ensure_dir(files_dir)
         with open(os.path.join(files_dir, f"{meta.uid}.info"), "w") as f:
-            f.write(json.dumps(meta, indent=4, default=lambda k: k.__dict__))
+            json.dump(meta.dict(), f)
 
-    def _initialize_file(uid: str) -> None:
-        if not os.path.exists(files_dir):
-            os.makedirs(files_dir)
-
-        open(os.path.join(files_dir, f"{uid}"), "a").close()
-
-    def _read_metadata(uid: str) -> FileMetadata | None:
-        fpath = os.path.join(files_dir, f"{uid}.info")
-        if os.path.exists(fpath):
-            with open(fpath, "r") as f:
-                return FileMetadata(**json.load(f))
-
-        return None
-
-    def _get_file(uid: str) -> bytes | None:
-        fpath = os.path.join(files_dir, uid)
-        if os.path.exists(fpath):
-            with open(fpath, "rb") as f:
-                return f.read()
-
+    def _read_metadata(uid: str) -> Optional[FileMetadata]:
+        meta_path = os.path.join(files_dir, f"{uid}.info")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r") as f:
+                data = json.load(f)
+                return FileMetadata(**data)
         return None
 
     def _file_exists(uid: str) -> bool:
         return os.path.exists(os.path.join(files_dir, uid))
 
-    def _get_file_length(uid: str) -> int:
-        return os.path.getsize(os.path.join(files_dir, uid))
-
-    def _delete_files(uid: str) -> None:
-        fpath = os.path.join(files_dir, uid)
-        if os.path.exists(fpath):
-            os.remove(fpath)
-
-        meta_path = os.path.join(files_dir, f"{uid}.info")
-        if os.path.exists(meta_path):
-            os.remove(meta_path)
-
-    def _get_and_save_the_file(
-        response: Response,
-        uuid: str,
-        content_type: str = Header(None),
-        content_length: int = Header(None),
-        upload_length: int = Header(None),
-    ):
-        # Check if the Content-Type header is set to "application/offset+octet-stream"
-        if content_type != "application/offset+octet-stream":
-            raise HTTPException(status_code=415)
-
-        meta = _read_metadata(uuid)
-        # Check if the upload ID is valid
-        if not meta or uuid != meta.uid:
-            raise HTTPException(status_code=404)
-
-        # Check if the Upload Offset with Content-Length header is correct
-        if meta.offset != upload_length + content_length:
-            raise HTTPException(status_code=409)
-
-        if meta.defer_length:
-            meta.size = upload_length
-
-        if not meta.expires:
-            date_expiry = datetime.now() + timedelta(days=days_to_keep)
-            meta.expires = str(date_expiry.isoformat())
-        _write_metadata(meta)
-
-        if meta.size == meta.offset:
-            response.headers["Tus-Resumable"] = tus_version
-            response.headers["Upload-Offset"] = str(
-                str(meta.offset) if meta.offset > 0 else str(content_length)
-            )
-            response.headers["Upload-Expires"] = str(meta.expires)
-            response.status_code = status.HTTP_204_NO_CONTENT
-            if on_upload_complete:
-                on_upload_complete(os.path.join(files_dir, f"{uuid}"), meta)
-
-            return response
-
-        response.headers["Tus-Resumable"] = tus_version
-        response.headers["Upload-Offset"] = str(meta.offset)
-        response.headers["Upload-Expires"] = str(meta.expires)
-        response.status_code = status.HTTP_204_NO_CONTENT
-        return response
-
-    def remove_expired_files():
-        file_list = os.listdir(files_dir)
-
-        file_list_to_remove = []
-
-        for f in file_list:
-            if len(f) == 32:
-                file_list_to_remove.append(f)
-
-        for f in file_list_to_remove:
-            meta = _read_metadata(f)
-            if meta.expires and datetime.fromisoformat(meta.expires) < datetime.now():
-                _delete_files(f)
-
-    def _get_host_and_proto(request: Request) -> tuple:
-        proto = "http"
-        host = request.headers.get("host")
-        if request.headers.get("X-Forwarded-Proto") is not None:
-            proto = request.headers.get("X-Forwarded-Proto")
-        if request.headers.get("X-Forwarded-Host") is not None:
-            host = request.headers.get("X-Forwarded-Host")
-        return proto, host
-
     def _build_location_url(request: Request, uuid: str) -> str:
-        proto, host = _get_host_and_proto(request=request)
-        return f"{proto}://{host}/{prefix}/{uuid}"
-
-    # # Create a scheduler for deleting the files
-    # scheduler = sched.scheduler(time.time, time.sleep)
-    # run_time = time.mktime(time.strptime("01:00", "%H:%M"))
-    # scheduler.enterabs(run_time, 1, remove_expired_files)
-    # scheduler.run()
+        proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+        host = request.headers.get("X-Forwarded-Host", request.headers.get("host"))
+        base_url = f"{proto}://{host}"
+        return f"{base_url}/{prefix}/{uuid}"
 
     return router

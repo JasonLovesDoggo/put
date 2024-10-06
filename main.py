@@ -1,17 +1,15 @@
-import asyncio
 import logging
 from datetime import datetime
-from tempfile import mkdtemp
 
-import aiofiles.os as aios
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from server.metadata import FileMetadata
-from server.routes import router as api_router
-from server.storages import LocalStorage, S3Storage
+from server.storages import S3Settings
+from server.storages.local import LocalStorage
 from server.storages.base import File
 from server.tus import create_api_router
+from server.metadata import FileMetadata
+from server.routes import router as api_router
 from setting import settings
 
 # Constants
@@ -25,7 +23,7 @@ GB = MB * 1024
 if settings.storage_type == "local":
     storage = LocalStorage()
 else:
-    storage = S3Storage(
+    storage = S3Settings(
         bucket_name=settings.s3_storage.bucket_name,
         endpoint_url=settings.s3_storage.endpoint_url,
         region_name=settings.s3_storage.region_name,
@@ -48,54 +46,47 @@ logging.basicConfig(level=settings.logging.level, format=settings.logging.format
 
 # TUS Configuration
 tus_config = {
+    "files_dir": str(settings.tus.files_dir),
     "max_size": settings.tus.max_size,
     "expiration_period": settings.tus.expiration_period,
 }
-
-
-# Utility Functions
-def from_timestamp(string, datestring) -> int:
-    return int(datetime.strptime(string, datestring).timestamp())
-
-
-async def post_upload(file, filepath: str) -> None:
-    print(f"Uploading file: {filepath}")
-    await storage.upload(
-        file_path=filepath, category="unsorted", mime_type="application/octet-stream"
-    )
-    await aios.remove(filepath)
-    await aios.remove(filepath + ".info")
-
-
-def on_upload_complete(file_path: str, metadata: FileMetadata) -> None:
-    print(f"Upload complete: {file_path}")
-    print(f"Metadata: {metadata}")
-
-    file = File(
-        name=metadata.metadata["filename"],
-        created_at=from_timestamp(metadata.created_at, "%Y-%m-%d %H:%M:%S.%f"),
-        expires=from_timestamp(metadata.expires, "%Y-%m-%dT%H:%M:%S.%f"),
-        size=metadata.size,
-        uid=metadata.uid,
-    )
-
-    asyncio.run(post_upload(file, file_path))
-
-
-# Include TUS API Router
-app.include_router(
-    create_api_router(
-        files_dir=mkdtemp(),
-        max_size=settings.tus.max_size * GB,
-        on_upload_complete=on_upload_complete,
-    ),
-)
 
 
 # Health Check Endpoint
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# On Upload Complete Callback
+async def on_upload_complete(file_path: str, metadata: FileMetadata):
+    print(f"Upload complete: {file_path}")
+    print(f"Metadata: {metadata}")
+
+    file = File(
+        uid=metadata.uid,
+        name=metadata.metadata.get("filename", metadata.uid),
+        size=metadata.offset,
+        created_at=int(datetime.now().timestamp()),
+        path=file_path,
+        mime_type=metadata.metadata.get("mime_type", "application/octet-stream"),
+        metadata=metadata.metadata,
+        category=metadata.metadata.get("category", "unsorted"),
+    )
+
+    with open(file_path, "rb") as f:
+        await storage.upload(file, f)
+
+
+# Include TUS API Router
+app.include_router(
+    create_api_router(
+        files_dir=settings.tus.files_dir,
+        max_size=settings.tus.max_size,
+        on_upload_complete=on_upload_complete,
+        storage=storage,
+    ),
+)
 
 
 @app.put(

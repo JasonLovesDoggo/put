@@ -1,28 +1,17 @@
-import json
 import os
 import shutil
+import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional, BinaryIO
 
 from fastapi import HTTPException
-from pydantic import BaseModel
 
-from setting import settings
-
-
-class FileMetadata(BaseModel):
-    id: str
-    name: str
-    size: int
-    created_at: int
-    updated_at: int
-    category: str
-    mime_type: str
+from .base import AbstractStorage, File, OrderBy, SortOrder
 
 
-class LocalStorage:
-    def __init__(self):
-        self.base_path = settings.local_storage.base_path
+class LocalStorage(AbstractStorage):
+    def __init__(self) -> None:
+        self.base_path = "/home/json/PycharmProjects/put/static"
         self.metadata_file = os.path.join(self.base_path, "metadata.json")
         self._ensure_base_path()
         self._load_metadata()
@@ -38,93 +27,130 @@ class LocalStorage:
             self.metadata = {}
 
     def _save_metadata(self):
+        # Validate metadata
+        json.dumps(self.metadata)
         with open(self.metadata_file, "w") as f:
             json.dump(self.metadata, f)
 
-    def _get_category_path(self, category: str) -> str:
-        return os.path.join(self.base_path, category)
+    def _get_file_path(self, file: File) -> str:
+        if file.category:
+            return os.path.join(self.base_path, file.category, file.uid)
+        else:
+            return os.path.join(self.base_path, file.uid)
 
-    async def upload(self, file_path: str, category: str, mime_type: str) -> str:
-        file_id = os.path.basename(file_path)
-        category_path = self._get_category_path(category)
-        os.makedirs(category_path, exist_ok=True)
-
-        destination = os.path.join(category_path, file_id)
-        shutil.copy2(file_path, destination)
-
-        file_stat = os.stat(destination)
-
+    async def upload(self, file: File, data: BinaryIO) -> None:
+        file_path = self._get_file_path(file)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "wb") as f:
+            shutil.copyfileobj(data, f)
         now = int(datetime.now().timestamp())
-        metadata = FileMetadata(
-            id=file_id,
-            name=os.path.basename(file_path),
-            size=file_stat.st_size,
-            created_at=now,
-            updated_at=now,
-            category=category,
-            mime_type=mime_type,
-        )
-
-        self.metadata[file_id] = metadata.model_dump()
+        metadata = {
+            "uid": file.uid,
+            "name": file.name,
+            "size": file.size,
+            "created_at": now,
+            "updated_at": now,
+            "category": file.category,
+            "mime_type": file.mime_type,
+            "metadata": file.metadata,
+        }
+        self.metadata[file.uid] = metadata
         self._save_metadata()
 
-        return file_id
-
-    async def download(self, file_id: str) -> bytes:
-        if file_id not in self.metadata:
+    async def download(self, uid: str) -> tuple[File, BinaryIO]:
+        if uid not in self.metadata:
             raise HTTPException(status_code=404, detail="File not found")
-
-        file_path = os.path.join(
-            self.base_path, self.metadata[file_id]["category"], file_id
+        metadata = self.metadata[uid]
+        file = File(
+            uid=uid, **metadata, path=self._get_file_path(File(uid=uid, **metadata))
         )
+        file_path = file.path
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="File not found")
+        data = open(file_path, "rb")
+        return file, data
 
-        with open(file_path, "rb") as f:
-            return f.read()
-
-    async def delete(self, file_id: str) -> None:
-        if file_id not in self.metadata:
+    async def delete(self, uid: str) -> None:
+        if uid not in self.metadata:
             raise HTTPException(status_code=404, detail="File not found")
-
-        file_path = os.path.join(
-            self.base_path, self.metadata[file_id]["category"], file_id
-        )
+        metadata = self.metadata[uid]
+        file_path = self._get_file_path(File(uid=uid, **metadata))
         if os.path.exists(file_path):
             os.remove(file_path)
-
-        del self.metadata[file_id]
+        del self.metadata[uid]
         self._save_metadata()
+
+    async def get(self, uid: str) -> File:
+        if uid not in self.metadata:
+            raise HTTPException(status_code=404, detail="File not found")
+        metadata = self.metadata[uid]
+        file = File(
+            uid=uid, **metadata, path=self._get_file_path(File(uid=uid, **metadata))
+        )
+        if not os.path.exists(file.path):
+            raise HTTPException(status_code=404, detail="File not found")
+        return file
 
     async def list_files(
         self,
         category: Optional[str] = None,
+        prefix: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: OrderBy = "created_at",
+        sort_order: SortOrder = SortOrder.DESC,
+    ) -> List[File]:
+        files = []
+        for uid, metadata in self.metadata.items():
+            if category and metadata.get("category") != category:
+                continue
+            if prefix and not metadata["name"].startswith(prefix):
+                continue
+            print(metadata)
+            if metadata.get("category") is None:
+                metadata["category"] = "unsorted"
+            del metadata["updated_at"]
+            if metadata.get("path") is None:
+                metadata["path"] = os.path.join(
+                    self.base_path,
+                    metadata["category"],
+                    metadata["uid"],
+                    metadata["name"],
+                )
+            files.append(File(**metadata))
+        reverse = sort_order == SortOrder.DESC
+        files.sort(key=lambda x: getattr(x, sort_by), reverse=reverse)
+        return files[offset : offset + limit]
+
+    async def search_files(
+        self,
+        query: str = "",
+        category: Optional[str] = None,
         mime_type: Optional[str] = None,
-        start_date: Optional[int] = None,  # Unix timestamp
-        end_date: Optional[int] = None,  # Unix timestamp
-        min_size: Optional[int] = None,
-        max_size: Optional[int] = None,
-        sort_by: str = "name",
-        sort_order: str = "asc",
-    ) -> List[Dict[str, Any]]:
-        files = list(self.metadata.values())
-
-        # Apply filters
-        if category:
-            files = [f for f in files if f["category"] == category]
-        if mime_type:
-            files = [f for f in files if f["mime_type"] == mime_type]
-        if start_date:
-            files = [f for f in files if f["created_at"] >= start_date]
-        if end_date:
-            files = [f for f in files if f["created_at"] <= end_date]
-        if min_size is not None:
-            files = [f for f in files if f["size"] >= min_size]
-        if max_size is not None:
-            files = [f for f in files if f["size"] <= max_size]
-
-        # Sort files
-        reverse = sort_order.lower() == "desc"
-        files.sort(key=lambda x: x[sort_by], reverse=reverse)
-
-        return files
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: OrderBy = "created_at",
+        sort_order: SortOrder = SortOrder.DESC,
+    ) -> List[File]:
+        files = []
+        for uid, metadata in self.metadata.items():
+            if category and metadata.get("category") != category:
+                continue
+            if mime_type and metadata.get("mime_type") != mime_type:
+                continue
+            if query and query.lower() not in metadata["name"].lower():
+                continue
+            created_at = datetime.fromtimestamp(metadata["created_at"])
+            if created_after and created_at < created_after:
+                continue
+            if created_before and created_at > created_before:
+                continue
+            file = File(
+                uid=uid, **metadata, path=self._get_file_path(File(uid=uid, **metadata))
+            )
+            files.append(file)
+        reverse = sort_order == SortOrder.DESC
+        files.sort(key=lambda x: getattr(x, sort_by), reverse=reverse)
+        return files[offset : offset + limit]

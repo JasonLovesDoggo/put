@@ -5,13 +5,14 @@ storage_type = "local"
 [local_storage]
 base_path = "/home/json/PycharmProjects/put/static"
 
-[s3_storage]
-bucket_name = "my-s3-bucket"
-region_name = "us-west-2"
-access_key_id = "YOUR_ACCESS_KEY"
-secret_access_key = "YOUR_SECRET_KEY"
+#[s3_storage]
+#bucket_name = "my-s3-bucket"
+#region_name = "us-west-2"
+#access_key_id = "YOUR_ACCESS_KEY"
+#secret_access_key = "YOUR_SECRET_KEY"
 
 [tus]
+files_dir = "/home/json/PycharmProjects/put/content"
 max_size = 2147483648  # 2GB
 expiration_period = 86400  # 24 hours
 
