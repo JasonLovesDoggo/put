@@ -25,7 +25,7 @@ func main() {
 		Usage:   "A self-hosted Drive CLI for developers",
 		Version: "1.0.0",
 		Description: `put is a command-line interface for interacting with your self-hosted
-Google Drive instance. It allows you to list, upload, and remove files
+PUT instance. It allows you to list, upload, and remove files
 from your instance.`,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{

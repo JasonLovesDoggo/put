@@ -59,6 +59,9 @@ func VerifyInstanceURI(c *cli.Context, instanceURI string) (err error) {
 
 // EnsureInstanceURI ensures that the instance URI is set and valid
 func EnsureInstanceURI(c *cli.Context) error {
+	if ConfigValidated {
+		return nil
+	}
 	config, err := LoadConfig()
 	if err != nil || config.InstanceURI == "" {
 		fmt.Print("Instance URI not set. Please enter your instance URI: ")
@@ -74,6 +77,7 @@ func EnsureInstanceURI(c *cli.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to save config: %v", err)
 		}
+		ConfigValidated = true
 		fmt.Println("Instance URI saved.")
 	} else {
 		err := VerifyInstanceURI(c, config.InstanceURI)
