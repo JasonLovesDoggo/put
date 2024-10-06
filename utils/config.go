@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 )
 
+var ConfigValidated = false
+
 // Config holds the instance URI configuration
 type Config struct {
 	InstanceURI string `json:"instance_uri"`

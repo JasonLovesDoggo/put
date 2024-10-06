@@ -13,13 +13,14 @@ import (
 )
 
 // VerifyInstanceURI checks if the provided instance URI is valid
-func VerifyInstanceURI(c *cli.Context, instanceURI string) error {
-	if !(strings.HasPrefix(instanceURI, "https://") ||
-		(strings.HasPrefix(instanceURI, "http://") && !c.Bool("unsecure"))) {
+func VerifyInstanceURI(c *cli.Context, instanceURI string) (err error) {
+	ConfigValidated = false
+	if !strings.HasPrefix(instanceURI, "https://") &&
+		(!c.Bool("unsecure") && strings.HasPrefix(instanceURI, "http://")) {
 		return fmt.Errorf("invalid instance URI: must be secure (https) or use --unsecure flag for http")
 	}
 
-	url := instanceURI + "/verifier"
+	url := instanceURI + "/api/signature"
 	req, err := http.NewRequest("PUT", url, nil)
 	if err != nil {
 		return err
@@ -30,15 +31,14 @@ func VerifyInstanceURI(c *cli.Context, instanceURI string) error {
 		return err
 	}
 	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			fmt.Println(err)
-		}
+		_ = Body.Close()
 	}(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
+		_ = os.Remove(GetConfigFilePath())
 		fmt.Print("Url provided is not a valid PUT instance URI. If you wish to use a self-hosted instance, " +
 			"please visit https://github.com/Jeff15321/put-server for more information.")
-		return nil
+		os.Exit(1)
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -48,11 +48,12 @@ func VerifyInstanceURI(c *cli.Context, instanceURI string) error {
 	err = json.Unmarshal(bodyBytes, &respData)
 	if err != nil {
 		return err
-	}
+	} // http://localhost:3000
 	verifierValue, ok := respData["verifier"].(string)
 	if !ok || verifierValue != "ArafOrzCatMan" {
 		return fmt.Errorf("invalid verifier response")
 	}
+	ConfigValidated = true
 	return nil
 }
 

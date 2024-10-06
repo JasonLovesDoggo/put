@@ -7,6 +7,7 @@ import (
 )
 
 func SetInstanceURI(c *cli.Context) error {
+	utils.ConfigValidated = false
 	instanceURI := c.Args().Get(0)
 	if instanceURI == "" {
 		return fmt.Errorf("please provide an instance URI")
@@ -15,8 +16,9 @@ func SetInstanceURI(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	saveConfig := &utils.Config{InstanceURI: instanceURI}
-	err = utils.SaveConfig(saveConfig)
+
+	Config := &utils.Config{InstanceURI: instanceURI}
+	err = utils.SaveConfig(Config)
 	if err != nil {
 		return fmt.Errorf("failed to save config: %v", err)
 	}
