@@ -7,6 +7,7 @@ import (
 	"github.com/jasonlovesdoggo/put/utils"
 	"github.com/urfave/cli/v2"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -192,9 +193,24 @@ func UploadFile(c *cli.Context) error {
 	}
 
 	if c.Bool("share") {
+		// Parse the response body as JSON
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		var respBody map[string]interface{}
+		err = json.Unmarshal([]byte(string(body)), &respBody)
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON response: %v", err)
+		}
+		shareLink, ok := respBody["shareLink"].(string)
+		if !ok {
+			return fmt.Errorf("shareLink not found in response")
+		}
+
 		// Print out resp body
-		fmt.Print("Your file is now publicly shareable for Here's the share link: ")
-		fmt.Println(resp.Body)
+		fmt.Println("Your file is now publicly shareable for Here's the share link: " + config.InstanceURI + shareLink)
 	}
 	return nil
 }

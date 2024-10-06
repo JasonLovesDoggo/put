@@ -61,7 +61,8 @@ from your instance.`,
 					"put stash <filePath>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
-						Name: "share",
+						Name:    "share",
+						Aliases: []string{"s"},
 						Usage: "Share the file with the public " +
 							"(default: false)",
 						Value: false,
