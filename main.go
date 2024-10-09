@@ -55,8 +55,8 @@ from your instance.`,
 				Action: callers.RemoveFile,
 			},
 			{
-				Name:    "stash",
-				Aliases: []string{"s"},
+				Name:    "upload",
+				Aliases: []string{"s", "stash", "up", "u"},
 				Usage: "Upload a file to the server" +
 					"put stash <filePath>",
 				Flags: []cli.Flag{
